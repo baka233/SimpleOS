@@ -1,0 +1,86 @@
+; start address
+org 0x7c00
+
+
+BaseOfStaack equ 0x7c00
+
+;message string
+StartBootMessage db "Start Booting..."
+StartBootMessageLength equ 16
+
+jmp   short Label_Start
+nop
+
+
+Label_Start:
+;init registers
+mov ax, cs
+mov ds, ax
+mov es, ax
+mov ss, ax
+mov sp, BaseOfStaack
+
+;clear screen
+mov ax, 0600h
+mov bx, 0700h
+mov cx, 0
+mov dx, 184Fh
+int 10h
+
+
+; set focus
+mov ax, 0200h
+mov bx, 0000h
+mov dx, 0000h
+int 10h
+
+
+push 0000h
+push StartBootMessageLength 
+push StartBootMessage
+call Func_PrintString
+
+;loop wait
+jmp $
+
+; display boot string
+Func_PrintString:
+push bp
+mov bp, sp
+
+;protect registers start
+push ax
+push bx
+push cx
+;protect registers end
+
+;protecct bp
+push bp
+
+;print string
+mov ax, 1301h
+mov bx, 000fh
+mov cx, [bp + 6]
+mov dx, [bp + 8]
+mov bp, [bp + 4]
+int 10h
+
+; recover bp
+pop bp
+
+; recover registers
+pop cx
+pop bx
+pop ax
+
+; close stack frame
+mov sp, bp
+pop bp
+
+;return
+ret 6h
+
+; padding zero and set flag
+times 510 - ($ - $$) db 0
+dw 0xaa55
+
