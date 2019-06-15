@@ -3,8 +3,8 @@ org 0x7c00
 
 ; equ 命令会被编译器等价替换
 ; stack base
-BaseOfStack   equ 0x7c00 
-BaseOfLoader equ 0x1000
+BaseOfStack     equ 0x7c00 
+BaseOfLoader    equ 0x1000
 OffsetOfLoader  equ 0x0000
 
 

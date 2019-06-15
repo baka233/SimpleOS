@@ -26,10 +26,11 @@ GetMemFailMessage         db    "Get memory struct failed"
 GetMemFailMessageLen      equ   $ - GetMemFailMessage
 GetMemOkMessage           db    "Get memory struct successful"
 GetMemOkMessageLen        equ   $ - GetMemOkMessage
-GO_TO_TMP_Protect         equ   0000
 
 [SECTION .s16]
 [BITS 16]
+
+%include "src/bootloader/fat12func.inc"
 
 Label_Start:
 
@@ -38,7 +39,7 @@ Label_Start:
     mov   es, ax
     mov   ax, 0x00
     mov   ss, ax      ; 设置ss段为0
-    mov   sp, 0x7c00  ; 栈数据段位于 0x7c00:0段中
+    mov   sp, 0x7c00  ; 栈数据段位于 0x0:0x7c00段中
 
     mov   ax, 1301h
     mov   bx, 000fh
@@ -52,13 +53,14 @@ Label_Start:
     int   10h
 
 ;======  open address A20
-;======  
+;======  To enable the function to search the address bigger than 1MB 
 
     push ax
-    in  al, 96h
-    mov al, 00000010b
+    in  al, 92h
+    or  al, 00000010b
     out 92h, al
     pop ax
+
 
     cli                         ; 禁用外部中断
 
@@ -76,13 +78,39 @@ Label_Start:
     mov   cr0, eax
 
     sti
-    jmp $
+    
 
+
+; ====== debug code ===========
+Open_Protec_Mode:
+
+    cli ;========= 关闭中断
+
+    db    0x66          ; 16bii 代码段要填充0x66来执行32位命令
+    lgdt  [GdtPtr]
+
+    db    0x66
+    lidt  [IDT_POINTER]
+
+
+
+    mov   eax, cr0
+    or    eax, 1        ; change cr0 1st bit to enable protect model
+    mov   cr0, eax
+
+    sti
+
+
+    jmp   dword SelectorCode32:GO_TO_TMP_Protect
+
+
+
+; ====== debug code end =======
 
 ;======= search kernel bin
 
 Label_Search_For_KernelBin_Start:
-    mov   word [SectorNo], SectorNumOfRootDirStart    ;
+    mov   word [SectorNo], SectorNumOfRootDirStart    ;to save the SectorNumOfRootDirStart into SectorNo
     
 Label_Search_In_Root_Dir_Begin:
     
@@ -91,21 +119,51 @@ Label_Search_In_Root_Dir_Begin:
     dec   word [RootDirSizeForLoop]
 
     mov   ax, 00h
-    mov   es, ax                                      ; 设置es段到缓冲区
-    mov   bx, 8000h
-    mov   ax,   [SectorNo]
+    mov   es, ax                                       
+    mov   bx, 8000h                                   ; use 0x0000:0x8000 as the buffer area
+    mov   ax, [SectorNo]
     mov   cl, 1
-    call  Func_ReadOneSector
+    call  Func_ReadOneSector                          ; Read one sector data from SectorNo
+
+    ;; ============ test =============
+    ;push ax
+    ;push bx
+    ;push dx
+    ;push cx
+    ;push es
+
+    ;mov   ax, 1301h
+    ;mov   bx, 000fh
+    ;mov   dx, 0200h
+    ;mov   cx, 11
+    ;push  ax
+    ;mov   ax, ds
+    ;mov   es, ax
+    ;pop   ax
+    ;mov   bp, GetMemOkMessage
+
+    ;pop es
+    ;pop cx
+    ;pop dx
+    ;pop bx
+    ;pop ax
+    ;; =========== test end =========
+
+
     mov   si, KernelFileName
     mov   di, 8000h
-    cld
-    mov   dx, 10h
+    cld                                               ; set DF = 0 
+    mov   dx, 10h                                     ; each sector have 0x10 entries
 
 Label_Search_For_KernelBin:
 
     cmp   dx, 0
-    jz    Label_Goto_Next_Sector_In_Root_Dir
+    jz    Label_Goto_Next_Sector_In_Root_Dir          ; if this sector didn't find the file, we can read next sector until the loop times exceeded the limit
     dec   dx
+
+
+    int   10h
+
     mov   cx, 11
 
 Label_Cmp_FileName:
@@ -133,9 +191,7 @@ Label_Different:
 Label_Goto_Next_Sector_In_Root_Dir:
     add   word[SectorNo], 1
     jmp   Label_Search_In_Root_Dir_Begin
-    
 
-    call  Func_ReadOneSector
 
 ;========= Didn't find the Kernel File
 
@@ -144,7 +200,7 @@ Label_No_KernelBin:
     mov   ax, 0x1301
     mov   bx, 0x008c
     mov   dx, 0x0300
-    mov  cx, 20
+    mov   cx, 29
     push  ax
     mov   ax, ds
     mov   es, ax
@@ -310,54 +366,6 @@ Func_Set_SVGA_mode:
     pop   ax
     pop   bx
     ret
-
-Func_GetFatEntry:
-
-    push  es
-    push  bx
-
-    push  ax
-    mov   ax,  0
-    mov   es, ax
-    pop   ax
-
-    mov   bx, 3
-    mul   bx
-    mov   bx, 2
-    div   bx
-    mov   byte [Odd], 0
-    
-    cmp   dx, 0
-    jz    Label_Even
-    mov   byte [Odd], 1
-
-Label_Even:
-    
-    xor   dx, dx
-    mov   bx, [BPB_BytePerSec]
-    div   bx
-    push  dx
-    mov   bx, 8000h
-    mov   ax, SectorNumOfFATStart
-    mov   cl, 2
-    call  Func_ReadOneSector
-
-    pop   dx
-    add   bx, dx
-    mov   ax, [es:bx]
-    cmp   byte  [Odd], 1
-    jnz   Label_Even2
-    shr   ax, 4
-
-Label_Even2:
-
-    and   ax, 0xfff
-    
-    pop   bx
-    pop   es
-    ret
-
-
 Label_DispAL:
     
     push  ecx
@@ -394,41 +402,13 @@ Label_DispAL:
     pop   edx
     pop   ecx
     ret
-
-Func_ReadOneSector:
-
-    push  bp
-    mov   bp, sp
-    sub   esp, 2
-    mov   byte[bp - 1], cl
-    push  bx
-    mov   bl, [BPB_SecPerTrk]
-    div   bl
-    inc   ah
-    mov   cl, ah
-    mov   dh, al
-    shr   al, 1
-    mov   ch, al
-    and   dh, 1
-    pop   bx
-    mov   dl, [BS_DrvNum]
-
-Label_Go_On_Read_Sector:
-    
-    mov   ah, 2
-    mov   al, byte [bp -2]
-    int   13h
-    jc    Label_Go_On_Read_Sector
-    add   esp, 2
-    pop   bp
-    ret
-
+  
 
 [SECTION  .gdt]
 
-LABEL_GDT            dd        0, 0
-LABEL_DESC_CODE32    dd        0x0000FFFF, 0x00CF9A00
-LABEL_DESC_DATA32    dd        0x0000FFFF, 0x00CF9200
+LABEL_GDT:            dd        0, 0
+LABEL_DESC_CODE32:    dd        0x0000FFFF, 0x00CF9A00 ; 代码段描述符， base = 0x0，limit = 0xffffffff, DPL = 0，可读
+LABEL_DESC_DATA32:    dd        0x0000FFFF, 0x00CF9200 ; 程序段描述符,  base = 0x0，limit = 0xffffffff, DPL = 0, 可写
 
 GdtLen      equ   $ - LABEL_GDT
 GdtPtr      dw    GdtLen - 1
@@ -437,32 +417,114 @@ GdtPtr      dw    GdtLen - 1
 SelectorCode32        equ       LABEL_DESC_CODE32 - LABEL_GDT
 SelectorData32        equ       LABEL_DESC_DATA32 - LABEL_GDT
 
+; ==== tmp idt
+
+IDT:
+    times           0x50 dq 0
+IDT_END:
+
+IDT_POINTER:
+    dw              IDT_END - IDT - 1
+    dd              IDT
+
 
 ;===== init IDT/GDT goto protect mode
-    push  ax
-    in    al, 92h
-    or    al, 00000010b         ; 通过A20快速门来开启4GB地址寻址空间
-    out   92h, al
-    pop   ax
+[SECTION .s32]
+[BITS 32]
+GO_TO_TMP_Protect:
+
+; ====== Go To tmp long mode
+    mov   ax, 0x10                      ; 从gdt中读取一个0, 0 的表项
+    mov   ds, ax
+    mov   es, ax
+    mov   fs, ax
+    mov   ss, ax
+    mov   esp, 0x7E00
+    
+    call support_long_mode
+    test  eax, eax
+
+    jz    no_support
+    mov   dword [0x90000], 0x91007
+    mov   dword [0x90800], 0x91007
+    mov   dword [0x91000], 0x92007
+    mov   dword [0x92000], 0x000083
+    mov   dword [0x92008], 0x200083
+    mov   dword [0x92010], 0x400083
+    mov   dword [0x92018], 0x600083
+    mov   dword [0x92020], 0x800083
+    mov   dword [0x92028], 0xa00083
+
+    ; ===== load GDTR
+    db 0x66
+    lgdt  [GdtPtr64]
+    mov   ax, 0x10
+    mov   es, ax
+    mov   ds, ax  
+    mov   fs, ax
+    mov   gs, ax
+    mov   ss, ax
+    mov   esp, 0x7E00
 
 
-    cli ;========= 关闭中断
+    mov   eax, cr4
+    bts   eax, 5
+    mov   cr4, eax
 
-    db    0x66          ; 16bii 代码段要填充0x66来执行32位命令
-    lgdt  [GdtPtr]
+    mov   eax, 0x90000
+    mov   cr3, eax
 
-;    db    0x66
-;    lidt  [IDT_POINTER]
+    mov   ecx, 0xC0000080
+    rdmsr
 
+    bts   eax, 8
+    wrmsr
 
     mov   eax, cr0
-    or    eax, 1
+    bts   eax, 0
+    bts   eax, 31
     mov   cr0, eax
 
-    sti
-
-    jmp   dword SelectorCode32:GO_TO_TMP_Protect
+    jmp   SelectorCode64:OffsetOfKernelFileTest
 
 
+support_long_mode:
+    
+    mov   eax, 0x80000000
+    cpuid
+    cmp   eax, 0x80000001
+    setnb al
+    jb    support_long_mode_done
+    mov   eax, 0x80000001
+    cpuid
+    bt    edx, 29
+    setc  al
 
+support_long_mode_done:
+
+    movzx eax, al
+    ret
+
+no_support:
+    
+    jmp   $
+
+
+[SECTIOn s64]
+[bits 64]
+OffsetOfKernelFileTest:
+    jmp $
+
+[SECTION gdt64]
+
+LABEL_GDT64:          dq            0x0000000000000000
+LABEL_DESC_CODE64:   dq            0x0020980000000000
+LABEL_DESC_DATA64:    dq            0x0000920000000000
+
+GdtLen64              equ           $ - LABEL_GDT64
+GdtPtr64              dw            GdtLen64 - 1
+                      dd            LABEL_GDT64
+
+SelectorCode64        equ           LABEL_DESC_CODE64 - LABEL_GDT64
+SelectorData64        equ           LABEL_DESC_DATA64 - LABEL_GDT64
 
